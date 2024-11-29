@@ -148,11 +148,6 @@ Contributions are welcome! If you'd like to suggest improvements or report bugs,
 
 ---
 
-### Screenshots
-
-![Bot in Action](https://via.placeholder.com/600x400?text=Bot+In+Action)
-
----
 
 ### Notes
 
