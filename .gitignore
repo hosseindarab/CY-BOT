@@ -1,0 +1,12 @@
+# Ignore Python bytecode files
+__pycache__/
+*.pyc
+
+# Ignore environment variable files
+.env
+
+# Ignore trade logs (if you have them)
+trade_log.txt
+
+# Ignore any other sensitive files
+*.sqlite3
