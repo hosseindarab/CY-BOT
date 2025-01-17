@@ -22,13 +22,13 @@ exchange = ccxt.mexc({
 CRYPTO_PAIRS = ['PEPE/USDT', 'DOGE/USDT', 'BNB/USDT', 'ADA/USDT', 'XRP/USDT',
                 'PYTH/USDT', 'SOL/USDT', 'JUP/USDT', 'MODE/USDT', 'BABYDOGE/USDT',
                 'BONK/USDT']
-TIMEFRAME = '1m'  # 1-minute for high-speed trading
-TRADE_SIZE_PERCENT = 0.1  # 10% of free balance per trade
-ATR_MULTIPLIER = 2  # ATR multiplier for trailing stops
+TIMEFRAME = '5m'  # 1-minute for high-speed trading
+TRADE_SIZE_PERCENT = 0.05  # 5% of free balance per trade
+ATR_MULTIPLIER = 3  # ATR multiplier for trailing stops
 TEST_MODE = False
-TRADE_COOLDOWN = 10  # Cooldown in seconds for rechecking signals
-MAX_TRADES = 100  # Maximum trades per session
-MIN_TRANSACTION_SIZE = 3  # Minimum trade value in USDT
+TRADE_COOLDOWN = 60  # Cooldown in seconds for rechecking signals
+MAX_TRADES = 30  # Maximum trades per session
+MIN_TRANSACTION_SIZE = 2  # Minimum trade value in USDT
 
 portfolio = {'initial_balance': 0, 'current_balance': 0, 'profit_loss': 0}
 open_positions = {}
@@ -100,6 +100,44 @@ def prepare_data(pair):
         data["MACD"] > data["Signal"], 1, -1)  # Momentum signal
     return data
 
+# Fetch and Sync Open Positions
+
+
+def fetch_open_positions():
+    try:
+        positions = {}  # Dictionary to store open positions
+        balance = exchange.fetch_balance()
+
+        # Iterate through all pairs to find open positions
+        for pair in CRYPTO_PAIRS:
+            asset = pair.split('/')[0]
+            if balance['total'].get(asset, 0) > 0:  # Asset balance exists
+                ticker = exchange.fetch_ticker(pair)
+                positions[pair] = {
+                    "entry_price": ticker["last"],  # Approximate entry price
+                    "amount": balance['total'][asset],  # Total asset balance
+                    "atr": 0  # ATR needs recalculating
+                }
+                log_message(
+                    f"Synced open position for {pair}: {positions[pair]}")
+
+        return positions
+    except Exception as e:
+        log_message(f"Error fetching open positions: {e}")
+        return {}
+
+
+# Sync ATR for Open Positions
+
+
+def sync_atr_for_positions():
+    for pair in open_positions.keys():
+        data = prepare_data(pair)
+        if data is not None and "ATR" in data.columns:
+            open_positions[pair]["atr"] = data.iloc[-1]["ATR"]
+            log_message(
+                f"Updated ATR for {pair}: {open_positions[pair]['atr']}")
+
 # Order Management
 
 
@@ -126,7 +164,6 @@ def place_sell_order(pair, amount):
 # Position Management
 
 
-# Position Management with Dynamic Trailing Stop
 def manage_position(pair, price):
     if pair not in open_positions:
         return False
@@ -134,15 +171,12 @@ def manage_position(pair, price):
     entry_price = position["entry_price"]
     atr = position["atr"]
 
-    # Adjust the trailing stop dynamically as the price increases
     trailing_stop = position.get(
         "trailing_stop", entry_price - ATR_MULTIPLIER * atr)
 
-    # If the price has moved up significantly, adjust the trailing stop to lock in profits
     if price > entry_price:
         trailing_stop = max(trailing_stop, price - ATR_MULTIPLIER * atr)
 
-    # If the price hits the trailing stop, close the position
     if price <= trailing_stop:
         log_message(
             f"Trailing stop hit for {pair} at {price}. Closing position.")
@@ -150,10 +184,8 @@ def manage_position(pair, price):
         open_positions.pop(pair, None)
         return True
 
-    # Save the new trailing stop value to the position
     open_positions[pair]["trailing_stop"] = trailing_stop
     return False
-
 
 # Trading Logic
 
@@ -170,19 +202,31 @@ def trade(pair, data):
     latest = data.iloc[-1]
     current_price = latest["close"]
 
+    # Check if a position already exists
     if pair in open_positions:
-        current_price = latest["close"]
+        log_message(f"Position already open for {pair}. Managing position.")
         manage_position(pair, current_price)
         return
 
+    # Fetch free USDT balance
+    free_usdt = fetch_spot_balance()
+
+    # Skip if balance is insufficient
+    if free_usdt < MIN_TRANSACTION_SIZE:
+        log_message(
+            f"Insufficient USDT balance to trade {pair}. Available: {free_usdt}")
+        return
+
+    # Check for buy signal
     if latest["Momentum"] == 1:  # Buy Signal
-        balance = fetch_spot_balance()
-        trade_size = calculate_trade_size(balance, current_price)
+        trade_size = calculate_trade_size(free_usdt, current_price)
 
         if trade_size <= 0:
-            log_message(f"Insufficient balance to place order for {pair}")
+            log_message(
+                f"Trade size calculation failed for {pair}. Skipping trade.")
             return
 
+        # Place buy order and log position
         place_buy_order(pair, trade_size)
         open_positions[pair] = {
             "entry_price": current_price,
@@ -196,6 +240,9 @@ def trade(pair, data):
 if __name__ == "__main__":
     log_message("Starting spot trading bot.")
     portfolio["initial_balance"] = fetch_spot_balance()
+
+    open_positions.update(fetch_open_positions())
+    sync_atr_for_positions()
 
     while len(open_positions) < MAX_TRADES:
         for pair in CRYPTO_PAIRS:
